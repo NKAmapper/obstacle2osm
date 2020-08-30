@@ -319,7 +319,7 @@ if __name__ == '__main__':
 				character = "flashing"
 			elif light == "FLO":
 				character = "floodlight"
-			make_osm_line ("aeroway:character", character)
+			make_osm_line ("aeroway:light:character", character)
 
 			if light in ['LIA','LIB']:
 				intensity = "low"
