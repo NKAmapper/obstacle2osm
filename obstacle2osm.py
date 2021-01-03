@@ -1,24 +1,24 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf8
 
 # obstacle2osm
 # Converts aviation obstacles from Kartverket WFS/GML files for import/update in OSM
-# Usage: obstacle2.osm [county] (county "00" is all of Norway)
+# Usage: obstacle2.osm [county]
 # Creates OSM file with name "Luftfartshinder_" + county + ".osm"
 
 
-import cgi
+import html
 import time
 import sys
-import urllib2
+import urllib.request
 import json
 import zipfile
-import StringIO
+from io import BytesIO
 from xml.etree import ElementTree
 import utm  # Local library
 
 
-version = "0.1.0"
+version = "1.0.0"
 
 
 # Tagging per obstacle type
@@ -84,8 +84,8 @@ ns = {
 # Produce a tag for OSM file
 
 def make_osm_line(key,value):
-    if value:
-		encoded_value = cgi.escape(value.encode('utf-8'),True).strip()
+	if value:
+		encoded_value = html.escape(value).strip()
 		file_out.write ('    <tag k="%s" v="%s" />\n' % (key, encoded_value))
 
 
@@ -98,7 +98,7 @@ if __name__ == '__main__':
 
 	# Load county id's and names from Kartverket api
 
-	file = urllib2.urlopen("https://ws.geonorge.no/kommuneinfo/v1/fylker")
+	file = urllib.request.urlopen("https://ws.geonorge.no/kommuneinfo/v1/fylker")
 	county_data = json.load(file)
 	file.close()
 
@@ -118,14 +118,14 @@ if __name__ == '__main__':
 		elif county_id == "00":
 			county_id = "0000"  # Norway
 	else:
-		sys.exit ("County code not found")
+		sys.exit ("County code not found. Norway is '00'.")
 
 	print ("Loading %s..." % county_name)
 
 	url = "https://nedlasting.geonorge.no/geonorge/Samferdsel/Luftfartshindre/GML/Samferdsel_%s_%s_6173_Luftfartshindre_GML.zip" % (county_id, county_name)
 
-	in_file = urllib2.urlopen(url)
-	zip_file = zipfile.ZipFile(StringIO.StringIO(in_file.read()))
+	in_file = urllib.request.urlopen(url)
+	zip_file = zipfile.ZipFile(BytesIO(in_file.read()))
 	filename = zip_file.namelist()[0]
 	file = zip_file.open(filename)
 
@@ -283,7 +283,7 @@ if __name__ == '__main__':
 		# Feature tagging (man_made, tower:type etc)
 
 		tag_found = False
-		for object_type, tags in tagging_table.iteritems():
+		for object_type, tags in iter(tagging_table.items()):
 			if object_type == obstacle['type']:
 				for tag in tags:
 					tag_split = tag.split("=")
