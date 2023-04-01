@@ -2,9 +2,10 @@
 # -*- coding: utf8
 
 # obstacle2osm
-# Converts aviation obstacles from Kartverket WFS/GML files for import/update in OSM
-# Usage: obstacle2.osm [county]
-# Creates OSM file with name "Luftfartshinder_" + county + ".osm"
+# Converts aviation obstacles from Kartverket GML files for import/update in OSM
+# Usage: obstacle2.osm <county> [-line]
+# Option: "-line" to output power lines
+# Creates gojson file with name "Luftfartshinder_" + county + ".osm"
 
 
 import html
@@ -15,333 +16,438 @@ import json
 import zipfile
 from io import BytesIO
 from xml.etree import ElementTree
-import utm  # Local library
+
+#sys.path.append('../gml/')
+import gml2osm
+from gml2osm import message
 
 
-version = "1.0.0"
+version = "2.0.0"
 
 
 # Tagging per obstacle type
 
 tagging_table = {
-	'Landbruksutstyr':		[],
-	'Telemast':				['man_made=mast', 'tower:type=communication'],
-	'Bru':					['man_made=tower', 'tower:type=bridge'],
-	'Bygning':				['building=yes'],
-	'Gondolbane':			['aerialway=gondola'],
-	u'Kontrolltårn':		['man_made=tower', 'tower:type=airport_control'],
-	u'Kjøletårn':			['man_made=tower', 'tower_type=cooling'],
-	'Kran':					['man_made=crane'],
-	'Demning':				['waterway=dam'],	
-	'Kuppel':				['man_made=tower', 'tower:construction=dome'],
-	'EL_Nettstasjon':		['power=substation', 'power=transformer'],
-	'Gjerde':				['barrier=fence'],
-	u'Fyrtårn':				['man_made=lighthouse'],
-	'Monument':				['man_made=tower', 'tower:type=monument'],
-	'Terrengpunkt':			['natural=peak'],
-	'Navigasjonshjelpemiddel':	['aeroway=navigationaid'],
-	'Stolpe':				['man_made=mast'],
-	'Kraftverk':			['power=plant'],
-	'Raffineri':			['man_made=tower'],
-	'Oljerigg':				[],
-	'Skilt':				[],
-	'Pipe':					['man_made=chimney'],
-	'Tank':					['man_made=storage_tank'],
-	'Forankret ballong':	[],
-	u'Tårn':				['man_made=tower'],
-	'Kraftledning':			[],
-	'Tre':					['natural=tree'],
-	u'Skogsområde':			['natural=wood'],
-	u'Vanntårn':			['man_made=storage_tank', 'content=water'],
-	u'Vindmølle':			['power=generator', 'generator:source=wind', 'generator:method=wind_turbine', 'generator:type=horizontal_axis'],
-	u'Vindmøllepark':		['type=site', 'power=plant', 'plant:source=wind'],
-	u'Hopptårn':			['man_made=tower', 'piste:type=ski_jump'],
-	u'Vindmåler':			['man_made=mast', 'tower:type=monitoring'],
-	'Lysmast':				['man_made=mast', 'tower:type=lighting'],
-	'Flaggstang':			['man_made=flagpole'],
-	'Petroleumsinnretning':	[],
-	'Silo':					['man_made=silo'],
-	'Stolheis':				['aerialway=chairlift'],
-	'Skitrekk':				['aerialway=draglift'],
-	'Taubane':				['aerialway=cable_car'],
-	u'Fornøyelsesparkinnretning':	['man_made=tower'],
-	'Annet':				[]
+	# Masts (NrlMast)
+	'belysningsmast':		['man_made=mast', 'tower:type=lighting'],
+	'lavspentmast':			['highway=street_lamp'],	
+	'ledningsmast':			['power=pole'],
+	'målemast':				['man_made=mast', 'tower:type=monitoring'],
+	'radiomast':			['man_made=antenna'],
+	'taubanemast':			['aerialway=pylon'],
+	'telemast':				['man_made=mast', 'tower:type=communication'],
+
+	# Points (NrlPunkt)
+	'bygning':				['building=yes'],
+	'flaggstang':			['man_made=flagpole'],
+	'forankretBallong':		[],
+	'fornøyelsesparkinnretning':	['man_made=tower'],
+	'fyrtårn':				['man_made=lighthouse'],
+	'hopptårn':				['man_made=tower', 'piste:type=ski_jump'],
+	'kjøletårn':			['man_made=tower', 'tower_type=cooling'],
+	'kontrolltårn':			['man_made=tower', 'tower:type=airport_control'],
+	'kraftverk':			['power=plant'],
+	'kran':					['man_made=crane'],
+	'kuppel':				['man_made=tower', 'tower:construction=dome'],
+	'monument':				['man_made=tower', 'tower:type=monument'],
+	'navigasjonshjelpemiddel':	['aeroway=navigationaid'],
+	'petroleumsinnretning':	[],
+	'pipe':					['man_made=chimney'],
+	'raffineri':			['man_made=tower'],
+	'silo':					['man_made=silo'],
+	'sprengningstårn':		[],
+	'tank':					['man_made=storage_tank'],
+	'tårn':					['man_made=tower'],
+	'vanntårn':				['man_made=storage_tank', 'content=water'],
+	'vindturbin':			['power=generator', 'generator:source=wind', 'generator:method=wind_turbine', 'generator:type=horizontal_axis'],
+
+	# Lines (NrlLinje)
+	'bru':					['man_made=bridge'],
+	'demning':				['waterway=dam'],
+	'gjerde':				['barrier=fence'],
+
+	# Aerial lines (NrlLuftspenn)
+	'bardun':				['man_made=guy'],
+	'gondolbane':			['aerialway=gondola'],	
+	'ledning':				['power=line'],
+	'løypestreng':			['aerialway=goods'],
+	'skitrekk':				['aerialway=draglift'],
+	'stolheis':				['aerialway=chairlift'],
+	'taubane':				['aerialway=cable_car'],
+	'vaier':				['man_made=guy'],
+	'zipline':				['aerialway=zip_line'],
+
+	# Flate (NrlFlate)
+	'kontaktledning':		['railway=rail'],
+	'transformatorstasjon':	['power=substation', 'power=transformer'],
+
+	# Other
+	'annet':				[]
 }
 
-# Namespace
-
-ns_gml = 'http://www.opengis.net/gml/3.2'
-ns_xlink = 'http://www.w3.org/1999/xlink'
-ns_app = 'http://skjema.geonorge.no/SOSI/produktspesifikasjon/Luftfartshindre/20180322'
-
-ns = {
-		'gml': ns_gml,
-		'xlink': ns_xlink,
-		'app': ns_app
-}
 
 
-# Produce a tag for OSM file
+# Determine obstacle type
 
-def make_osm_line(key,value):
-	if value:
-		encoded_value = html.escape(value).strip()
-		file_out.write ('    <tag k="%s" v="%s" />\n' % (key, encoded_value))
+def get_obstacle_type(obstacle):
+
+	for object_type in ["punkt", "mast", "luftspenn", "linje", "flate"]:
+		if object_type + "Type" in obstacle:
+			return obstacle[ object_type + "Type" ]
+	return None
+
+
+
+# Tag obstacle
+
+def tag_obstacle(feature):
+
+	obstacle = feature['data']
+	tags = {}
+	obstacle_type = get_obstacle_type(obstacle)
+
+	# Name and id
+
+	if "navn" in obstacle:
+		name = obstacle['navn']
+		if name == name.upper():
+			name = name.title()
+		if name and not ("luftfartshinderId" in obstacle and name == obstacle['luftfartshinderId']):
+			tags['description'] = name
+
+	tags['OBSTACLE_TYPE'] = obstacle_type
+	tags['STATUS'] = obstacle['status']
+
+	if "luftfartshinderId" in obstacle:
+		tags['ref:hinder'] = obstacle['luftfartshinderId']
+
+	# Height/elevation, coordinates
+
+	height = None
+	if "vertikalAvstand" in obstacle:
+		height = float(obstacle['vertikalAvstand'])
+		tags['height'] = "%i" % height
+
+	if feature['type'] == "Point":
+		z = feature['coordinates'][2]
+		feature['coordinates'] = ( feature['coordinates'][0], feature['coordinates'][1] )  # Strip z
+	else:
+		z = max(point[2] for point in feature['coordinates'])  # List
+		feature['coordinates'] = [ ( point[0], point[1] ) for point in feature['coordinates']]
+
+	top_ele = None
+	if "høydereferanse" in obstacle:
+		if obstacle['høydereferanse'] == "topp":
+			if height is not None:
+				z = z - height
+			else:
+				top_ele = z
+				z = None
+
+	if z:
+		tags['ele'] = "%i" % z
+	elif top_ele:
+		tags['top_ele'] = "%i" % top_ele
+
+	# Dates
+
+	if "datafangstdato" in obstacle:
+		tags['DATE_SURVEY'] = obstacle['datafangstdato'][:10]
+
+	if "registreringsdato" in obstacle:
+		tags['DATE_CREATE'] = obstacle['registreringsdato'][:10]
+
+	if "oppdateringsdato" in obstacle:
+		tags['DATE_UPDATE'] = obstacle['oppdateringsdato'][:10]
+
+	# Feature tagging (man_made, tower:type etc)
+
+	if obstacle_type in tagging_table:
+		for tag in tagging_table[ obstacle_type ]:
+			tag_split = tag.split("=")
+			tags[ tag_split[0] ] = tag_split[1]
+	else:
+		message ("Object type '%s' not found in tagging table\n" % obstacle_type)
+
+	# Light tagging
+
+	if "luftfartshinderlyssetting" in obstacle:
+
+		light = obstacle['luftfartshinderlyssetting']
+
+		tags['aeroway:light'] = "obstacle"  # Only light tag if type is "lyssatt"
+
+		if light in ['blinkendeRødt','fastRødt','lavintensitetTypeA','lavintensitetTypeB','mellomintensitetTypeB','mellomintensitetTypeC']:
+			tags['aeroway:light:colour'] = "red"
+		elif light in ['blinkendeHvitt','fastHvitt','mellomintensitetTypeA','høyintensitetTypeA','høyintensitetTypeB']:
+			tags['aeroway:light:colour'] = "white"
+
+		if light in ['fastRødt','fastHvitt','lavintensitetTypeA','lavintensitetTypeB','mellomintensitetTypeC']:
+			tags['aeroway:light:character'] = "fixed"
+		elif light in ['blinkendeRødt','blinkendeHvitt','mellomintensitetTypeA','mellomintensitetTypeB','høyintensitetTypeA','høyintensitetTypeB']:
+			tags['aeroway:light:character'] = "flashing"
+		elif light == "belystMedFlomlys":
+			tags['aeroway:light:character'] = "floodlight"
+
+		if "lavintensitet" in light:
+			tags['aeroway:light:intensity'] = "low"
+		elif "mellomintensitet" in light:
+			tags['aeroway:light:intensity'] = "medium"
+		elif "høyintensitet" in light:
+			tags['aeroway:light:intensity'] = "high"
+
+		if "TypeA" in light:
+			tags['aeroway:light:icao_type']  = "A"
+		elif "TypeB" in light:
+			tags['aeroway:light:icao_type']  = "B"
+		elif "TypeC" in light:
+			tags['aeroway:light:icao_type']  = "C"
+
+	return tags
+
+
+
+# Combine connected lines 
+
+def combine_lines(line_groups):
+
+	# Connect power lines
+
+	lines = []
+
+	for group, segments in iter(line_groups.items()):
+		remaining = segments[:]
+		new_line = []
+
+		while remaining:
+			next_feature = remaining.pop()
+			new_line = next_feature['coordinates'][:]
+
+			min_ele = min(point[2] for point in next_feature['coordinates'])
+			max_ele = max(point[2] for point in next_feature['coordinates'])
+			if "vertikalAvstand" in next_feature['data']:
+				min_height = float(next_feature['data']['vertikalAvstand'])
+				max_height = float(next_feature['data']['vertikalAvstand'])
+				no_height = False
+			else:
+				min_height = 9999
+				max_height = -9999
+				no_height = True
+
+			if "høydereferanse" in next_feature['data']:
+				ele_reference = next_feature['data']['høydereferanse']
+				no_reference = False
+			else:
+				ele_reference = ""
+				no_reference = True
+
+			found = True
+
+			while remaining and found and not ("luftspennType" in next_feature['data'] and next_feature['data']['luftspennType'] == "bardun"):
+				found = False
+				new_line_set = set({new_line[0], new_line[-1]})
+				for i, segment in enumerate(remaining[:]):
+					if new_line_set.intersection(segment['coordinates']):
+
+						# Match without z coordinate, which in rare cases might differ
+						if segment['coordinates'][0] == new_line[-1]:
+							new_line.extend(segment['coordinates'][1:])
+						elif segment['coordinates'][-1] == new_line[-1]:
+							new_line.extend(list(reversed(segment['coordinates']))[1:])
+						elif segment['coordinates'][-1] == new_line[0]:
+							new_line = segment['coordinates'] + new_line[1:]
+						elif segment['coordinates'][0] == new_line[0]:
+							new_line = list(reversed(segment['coordinates'])) + new_line[1:]
+
+						min_ele = min(min_ele, min(point[2] for point in segment['coordinates']))
+						max_ele = max(max_ele, max(point[2] for point in segment['coordinates']))
+						if "vertikalAvstand" in segment['data']:
+							min_height = min(min_height, float(segment['data']['vertikalAvstand']))
+							max_height = max(max_height, float(segment['data']['vertikalAvstand']))
+						else:
+							no_height = True
+						if "høydereferanse" not in segment['data'] or segment['data']['høydereferanse'] != ele_reference:
+							no_reference = True
+
+						del remaining[i]
+						found = True
+						break
+
+			tags = {}
+			if not no_height and min_height == max_height:
+				tags['height'] = "%i" % min_height
+			if not no_reference and min_ele == max_ele:
+				if ele_reference == "topp":
+					if not no_height and min_height == max_height:
+						tags['ele'] = "%i" % (min_ele - min_height)
+					else:
+						tags['top_ele'] = "%i" % min_ele
+				else:
+					tags['ele'] = "%i" % min_ele
+
+			new_feature = {
+				'object': next_feature['object'],
+				'type': 'LineString',
+				'data': next_feature['data'],
+				'tags': tags,
+				'coordinates': new_line
+			}
+			lines.append(new_feature)
+
+	return lines
+
+
+
+# Create collection of obstacles, excluding power lines and power masts
+
+def create_obstacles(features):
+
+	line_groups = {}
+	obstacle_points = []
+	last_date = ""
+
+	# Find all point obstacles
+
+	for feature in features:
+		obstacle = feature['data']
+		obstacle_type = get_obstacle_type(obstacle)
+
+		if obstacle['status'] in ["eksisterende", "planlagtOppført"] and obstacle_type not in ["ledning", "ledningsmast"]:
+			if feature['type'] == "Point":
+				feature['tags'] = tag_obstacle(feature)
+				obstacle_points.append(feature)
+
+			else:
+				ref = obstacle_type
+				if "luftfartshinderId" in feature:
+					ref += obstacle['luftfartshinderId'].strip()
+				if ref not in line_groups:
+					line_groups[ ref ] = []
+				line_groups[ ref ].append(feature)
+				
+			last_date = max(last_date, obstacle['oppdateringsdato'])
+
+	# Concatenate features from same id
+	obstacle_lines = combine_lines(line_groups)
+
+	for line in obstacle_lines:
+		tags = tag_obstacle(line)
+		for key in ['ele', 'top_ele', 'height']:
+			if key in tags:
+				del tags[ key ]
+		line['tags'].update(tags)  # Keep existing ele/height tags
+
+	message ("\t%i obstacle lines, %i points\n" % (len(obstacle_lines), len(obstacle_points)))
+	message ("\tLast update: %s\n" % last_date[:10])
+
+	return obstacle_points + obstacle_lines
+
+
+
+# Create network of power lines including pylons
+
+def create_powerlines(features):
+
+	# Sort all lines according to name
+
+	message ("Combine power lines ...\n")
+
+	line_groups = {}
+	power_masts = []
+	last_date = ""
+
+	for feature in features:
+		obstacle = feature['data']
+		obstacle_type = get_obstacle_type(obstacle)
+
+		if obstacle['status'] in ["eksisterende", "planlagtOppført"]:
+			if obstacle_type == "ledning":
+				name = ""
+				if "navn" in obstacle:
+					name = obstacle['navn'].strip()
+
+				if name not in line_groups:
+					line_groups[ name ] = []
+
+				line_groups[ name ].append(feature)
+				last_date = max(last_date, obstacle['oppdateringsdato'])
+
+			elif obstacle_type == "ledningsmast":
+				feature['tags'] = tag_obstacle(feature)
+				tags = {}
+				for key, value in iter(feature['tags'].items()):
+					if key in ["power", "height", "ele", "top_ele"] or "light" in key:  # Only most important tags
+						tags[ key ] = value
+
+				feature['tags'] = tags
+				power_masts.append(feature)
+				last_date = max(last_date, obstacle['oppdateringsdato'])
+
+	power_lines = combine_lines(line_groups)
+
+	for line in power_lines:
+		line_name = ""
+		if "navn" in line['data']:
+			line_name = line['data']['navn']
+		if "luftfartshinderId" in line['data'] and line_name == line['data']['luftfartshinderId']:
+			line_name = ""
+		if line_name == line_name.upper():
+			line_name = line_name.title()
+
+		line['tags'] = {
+			'power': 'line',
+			'name': line_name,
+			'STATUS': line['data']['status'],
+			'OBSTACLE_TYPE': line['data']['luftspennType']
+		}
+
+		for key in [("DATE_SURVEY", "datafangstdato"), ("DATE_CREATE", "registreringsdato"), ("DATE_UPDATE", "oppdateringsdato")]:
+			if key[1] in line['data']:
+				line['tags'][ key[0] ] = line['data'][ key[1] ][:10]
+
+	message ("\t%i power lines, %i masts\n" % (len(power_lines), len(power_masts)))
+	message ("\tLast update: %s\n" % last_date[:10])
+
+	return power_masts + power_lines
+
 
 
 # Main program
 
 if __name__ == '__main__':
 
-	start_time = time.time()
-	today = time.strftime("%Y-%m-%d", time.localtime())
+	message ("\n--- obstacle2osm ---\n")
 
 	# Load county id's and names from Kartverket api
 
-	file = urllib.request.urlopen("https://ws.geonorge.no/kommuneinfo/v1/fylker")
-	county_data = json.load(file)
-	file.close()
-
-	county = {}
-	for coun in county_data:
-		county[coun['fylkesnummer']] = coun['fylkesnavn'].strip()
-	county['21'] = "Svalbard"
-	county['00'] = "Norge"
-
-	# Load obstacle gml from GeoNorge
-
-	if (len(sys.argv) > 1) and (sys.argv[1] in county):
-		county_id = sys.argv[1]
-		county_name = county[county_id].replace(u"Ø", "O").replace(u"ø", "o").replace(" ", "_")
-		if county_id == "21":
-			county_id = "2100"  # Svalbard
-		elif county_id == "00":
-			county_id = "0000"  # Norway
+	if len(sys.argv) > 1 and "-" not in sys.argv[1]:
+		gml2osm.load_municipalities(area_filter="county")
+		county = gml2osm.get_municipality(sys.argv[1])
+		if county is None:
+			sys.exit("*** County '%s' not found\n\n" % sys.argv[1])
+		else:
+			county_id, county_name = county
 	else:
-		sys.exit ("County code not found. Norway is '00'.")
+		county_id = "0000"
+		county_name = "Norge"  # Default
 
-	print ("Loading %s..." % county_name)
+	message ("Area: %s\n" % county_name)
 
-	url = "https://nedlasting.geonorge.no/geonorge/Samferdsel/Luftfartshindre/GML/Samferdsel_%s_%s_6173_Luftfartshindre_GML.zip" % (county_id, county_name)
+	# Load obstacle gml from GeoNorge, process and output
 
-	in_file = urllib.request.urlopen(url)
-	zip_file = zipfile.ZipFile(BytesIO(in_file.read()))
-	filename = zip_file.namelist()[0]
-	file = zip_file.open(filename)
+	county_name = gml2osm.clean_url(county_name)
+	url = "https://nedlasting.geonorge.no/geonorge/Samferdsel/Luftfartshindre/GML/Samferdsel_%s_%s_4258+3855_Luftfartshindre_GML.zip" % \
+			 (county_id, county_name)
+	out_filename = gml2osm.clean_url("luftfartshindre_%s_%s.geojson" % (county_id[:2], county_name))
 
-	tree = ElementTree.parse(file)
-	file.close()
+	if "-line" in sys.argv or "-power" in sys.argv:
+		features = gml2osm.load_gml(url, object_filter=["NrlMast", "NrlLuftspenn"], elevations=True, verbose=True)
+		features = create_powerlines(features)
+		out_filename = out_filename.replace(".geojson", "") + "_powerlines.geojson"
+	else:
+		features = gml2osm.load_gml(url, elevations=True, verbose=True)
+		features = create_obstacles(features)
 
-	root = tree.getroot()
-	feature_collection = root
+	gml2osm.save_geojson(features, out_filename, verbose=True)
 
-	obstacles = []
-
-	# Pass 1:
-	# Find all point obstacles (excluding lines)
-
-	for feature_member in feature_collection.iter('{%s}featureMember' % ns_gml):
-
-		vertical_object = feature_member.find('app:VertikalObjekt', ns)
-		if vertical_object != None:
-
-			xlink = vertical_object.find(u'app:bestårAvVertikalobjKompPunkt', ns)
-			status = vertical_object.find('app:status', ns).text
-			valid_date = vertical_object.find('app:gyldigTil', ns)
-
-			if (xlink != None) and (status in ["E", "P"]) and ((valid_date == None) or (valid_date.text > today)):
-
-				xlink_ref = xlink.get('{%s}href' % ns_xlink)
-
-				update_date = vertical_object.find('app:oppdateringsdato', ns).text[:10]
-				name = vertical_object.find('app:vertikalObjektNavn', ns).text
-				object_id = vertical_object.find('app:identifikasjonObjekt/app:IdentifikasjonObjekt/app:lokalId', ns).text
-				object_type = vertical_object.find('app:vertikalObjektType', ns).text
-
-				obstacle = {
-					'status': status,
-					'date_update': update_date,
-					'type': object_type,
-					'name': name,
-					'ref:hinder': object_id,
-					'xlink': xlink_ref
-				}
-
-				create_date = vertical_object.find('app:datafangstdato', ns)
-				if create_date != None:
-					obstacle['date_create'] = create_date.text[:10]
-
-				if valid_date != None:
-					obstacle['date_valid'] = valid_date.text[:10]
-
-				obstacles.append(obstacle)
-
-	# Pass 2:
-	# Find obstacle coordinates
-
-	print ("Matching coordinates for %i obstacles..." % len(obstacles))
-
-	for feature_member in feature_collection.iter('{%s}featureMember' % ns_gml):
-
-		point = feature_member.find('app:VertikalObjektKomponentPunkt', ns)
-		if point != None:
-
-			point_id = point.get('{%s}id' % ns_gml)
-
-			for obstacle in obstacles:
-				if obstacle['xlink'] == point_id:
-
-					coordinates = point.find('app:posisjon/gml:Point/gml:pos', ns).text
-					coordinates_split = coordinates.split(" ")
-					x = float(coordinates_split[0])
-					y = float(coordinates_split[1])
-					z = float(coordinates_split[2])
-
-					latitude, longitude = utm.UtmToLatLon(x, y, 33, "N")
-
-					obstacle['latitude'] = latitude
-					obstacle['longitude'] = longitude
-
-					height = point.find('app:vertikalUtstrekning', ns)
-					if height != None:
-						height = float(height.text)
-						obstacle['height'] = "%.0f" % height
-
-					z_ref = point.find('app:href', ns).text
-					top_ele = None
-
-					if z_ref == "TOP":
-						if height != None:
-							z = z - height
-						else:
-							top_ele = z
-							z = None
-
-					if z:
-						if z == round(z,0):
-							obstacle['ele'] = "%.0f" % z
-						else:
-							obstacle['ele'] = "%.1f" % z
-					elif top_ele:
-						if top_ele == round(top_ele,0):
-							obstacle['top_ele'] = "%.0f" % top_ele
-						else:
-							obstacle['top_ele'] = "%.1f" % top_ele
-
-					light = point.find('app:lyssetting', ns).text
-
-					obstacle['light'] = light
-
-					break
-
-	# Pass 3:
-	# Output file
-
-	filename = "Luftfartshindre_" + county_name + ".osm"
-	print ("Writing file '%s'..." % filename)
-	file_out = open(filename, "w")
-
-	file_out.write ('<?xml version="1.0" encoding="UTF-8"?>\n')
-	file_out.write ('<osm version="0.6" generator="obstacle2osm v%s">\n' % version)
-
-	node_id = -1000
-
-	for obstacle in obstacles:
-
-		node_id -= 1
-		file_out.write ('  <node id="%i" lat="%f" lon="%f">\n' % (node_id, obstacle['latitude'], obstacle['longitude']))
-
-		name = obstacle['name']
-		if name == obstacle['ref:hinder']:
-			name = ""
-		elif name == name.upper():
-			name = name.title()
-
-		make_osm_line ("ref:hinder", obstacle['ref:hinder'])
-		make_osm_line ("description", name)
-
-		make_osm_line ("OBSTACLE_TYPE", obstacle['type'])
-		make_osm_line ("STATUS", obstacle['status'])
-
-		if "height" in obstacle:
-			make_osm_line ("height", obstacle['height'])
-
-		if "ele" in obstacle:
-			make_osm_line ("ele", obstacle['ele'])
-		elif "top_ele" in obstacle:
-			make_osm_line ("top_ele", obstacle['top_ele'])
-
-		if not("date_create" in obstacle) or (obstacle['date_update'] != obstacle['date_create']):
-			make_osm_line ("DATE_UPDATE", obstacle['date_update'])
-
-		if "date_create" in obstacle:
-			make_osm_line ("DATE_CREATE", obstacle['date_create'])
-
-		if "date_valid" in obstacle:
-			make_osm_line ("end_date", obstacle['date_valid'])
-
-		# Feature tagging (man_made, tower:type etc)
-
-		tag_found = False
-		for object_type, tags in iter(tagging_table.items()):
-			if object_type == obstacle['type']:
-				for tag in tags:
-					tag_split = tag.split("=")
-					make_osm_line (tag_split[0], tag_split[1])
-				tag_found = True
-				break
-
-		if not(tag_found):
-			print ("Object type '%s' not found in tagging table " % obstacle['type'])
-
-		# Light tagging
-
-		light = obstacle['light']
-
-		if not(light in ['IL', 'UKJ']):
-
-			colour = ""
-			character = ""
-			intensity = ""
-			icao_type = ""
-
-			make_osm_line ("aeroway:light", "obstacle")
-
-			if light in ['BR','FR','LIA','LIB','MIB','MIC']:
-				colour = "red"
-			elif light in ['BH','FH','MIA','HIA','HIB']:
-				colour = "white"
-			make_osm_line ("aeroway:light:colour", colour)
-
-			if light in ['FR','FH','LIA','LIB','MIC']:
-				character = "fixed"
-			elif light in ['BR','BH','MIA','MIB','HIA','HIB']:
-				character = "flashing"
-			elif light == "FLO":
-				character = "floodlight"
-			make_osm_line ("aeroway:light:character", character)
-
-			if light in ['LIA','LIB']:
-				intensity = "low"
-			elif light in ['MIA','MIB','MIC']:
-				intensity = "medium"
-			elif light in ['HIA','HIB']:
-				intensity = "high"
-			make_osm_line ("aeroway:light:intensity", intensity)
-
-			if light in ['LIA','MIA','HIA']:
-				icao_type = "A"
-			elif light in ['LIB','MIB','HIB']:
-				icao_type = "B"
-			elif light == "HIC":
-				icao_type = "C"
-			make_osm_line ("aeroway:light:icao_type", icao_type)
-
-		file_out.write ('  </node>\n')
-
-	# Wrap up
-
-	file_out.write ('</osm>\n')
-	file_out.close()
-
-	print ("Done in %i seconds" % (time.time() - start_time))
+	message ("\n")
